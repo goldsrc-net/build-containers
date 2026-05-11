@@ -102,4 +102,47 @@ RUN --mount=target=/var/lib/apt/lists,type=cache,sharing=locked \
       apt-get install -y --no-install-recommends libmariadb-dev; \
     fi
 
+# Per-arch staging trees for static-linking MariaDB Connector/C into
+# amxmodx's mysqlx module. libmariadb-dev is NOT Multi-Arch: same in
+# any Debian release (debian BTS #880390, #1006388 — long-standing
+# upstream bug across stretch/buster/bullseye/bookworm), so we can't
+# apt-install dev packages for multiple arches concurrently. Sidestep
+# via `apt download` + `dpkg-deb -x` into per-arch trees.
+#
+# Each /opt/mariadb-static-<arch>/ has the shape amxmodx's
+# mysqlx/AMBuilder expects with --mysql=<path>:
+#   <path>/include/mysql.h, ma_io.h, server/*.h, etc.
+#   <path>/lib/libmysqlclient_r.a   (renamed from libmariadbclient.a)
+# so the same self-contained static-link pattern upstream uses with
+# Oracle's bundled libmysqlclient_r.a works here with Connector/C 3.x.
+RUN --mount=target=/var/lib/apt/lists,type=cache,sharing=locked \
+    --mount=target=/var/cache/apt,type=cache,sharing=locked \
+    apt-get -o Acquire::Check-Valid-Until=false update && \
+    if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+      mkdir -p /opt/mariadb-static-amd64/include /opt/mariadb-static-amd64/lib && \
+      cp -r /usr/include/mariadb/. /opt/mariadb-static-amd64/include/ && \
+      cp /usr/lib/x86_64-linux-gnu/libmariadbclient.a \
+         /opt/mariadb-static-amd64/lib/libmysqlclient_r.a && \
+      cd /tmp && mkdir -p mariadb-dl && chmod 0777 mariadb-dl && cd mariadb-dl && \
+      apt-get download libmariadb-dev:i386 libmariadb-dev:arm64 && \
+      for arch in i386 arm64; do \
+        case $arch in \
+          i386)  triplet=i386-linux-gnu;    target=i386 ;; \
+          arm64) triplet=aarch64-linux-gnu; target=aarch64 ;; \
+        esac && \
+        ext=/tmp/mariadb-ext-$arch && \
+        out=/opt/mariadb-static-$target && \
+        mkdir -p "$ext" "$out/include" "$out/lib" && \
+        dpkg-deb -x libmariadb-dev_*_$arch.deb "$ext" && \
+        cp -r "$ext/usr/include/mariadb/." "$out/include/" && \
+        cp "$ext/usr/lib/$triplet/libmariadbclient.a" "$out/lib/libmysqlclient_r.a"; \
+      done && \
+      rm -rf /tmp/mariadb-dl /tmp/mariadb-ext-i386 /tmp/mariadb-ext-arm64; \
+    elif [ "$(dpkg --print-architecture)" = "arm64" ]; then \
+      mkdir -p /opt/mariadb-static-aarch64/include /opt/mariadb-static-aarch64/lib && \
+      cp -r /usr/include/mariadb/. /opt/mariadb-static-aarch64/include/ && \
+      cp /usr/lib/aarch64-linux-gnu/libmariadbclient.a \
+         /opt/mariadb-static-aarch64/lib/libmysqlclient_r.a; \
+    fi
+
 CMD ["/bin/bash"]
