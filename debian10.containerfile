@@ -2,9 +2,14 @@ FROM debian:buster
 
 ARG CLANG_VERSION=11
 
-# Upstream layer (verbatim from alliedmodders/build-containers): pin the
-# EOL repos at archive.debian.org, install the standard toolset, then
+# Upstream layer (from alliedmodders/build-containers): pin the EOL
+# repos at archive.debian.org, install the standard toolset, then
 # install clang via apt.llvm.org's installer.
+#
+# The amd64-only packages (gcc-multilib / g++-multilib / lib32z1-dev)
+# are gated on $(dpkg --print-architecture) so this image can also
+# be built for linux/arm64 — those packages have no arm64 candidate
+# on debian:buster and would fail apt-get install otherwise.
 RUN --mount=target=/var/lib/apt/lists,type=cache,sharing=locked \
     --mount=target=/var/cache/apt,type=cache,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean && \
@@ -13,7 +18,10 @@ RUN --mount=target=/var/lib/apt/lists,type=cache,sharing=locked \
     apt-get -o Acquire::Check-Valid-Until=false update && \
     apt-get upgrade -y && \
     apt-get install -y apt-transport-https lsb-release wget software-properties-common gnupg \
-        curl git gcc-multilib g++-multilib jq lib32z1-dev nasm python python3-pip && \
+        curl git jq nasm python python3-pip && \
+    if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+      apt-get install -y gcc-multilib g++-multilib lib32z1-dev; \
+    fi && \
     wget https://apt.llvm.org/llvm.sh && \
     chmod +x llvm.sh && \
     ./llvm.sh ${CLANG_VERSION} && \
@@ -76,12 +84,12 @@ RUN if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
     fi
 
 # MariaDB Connector/C — used by amxmodx's mysqlx module. Debian's
-# libmariadb-dev ships headers in a single non-multiarch path, so only
-# install the dev package for the host arch (amd64) — that gives the
-# headers + the amd64 static lib. For i386 / arm64, install the
-# runtime-only libmariadb3:<arch> packages so cross-builds link
-# dynamically. Deploy hosts already have libmariadb3 installed by any
-# MariaDB/MySQL setup.
+# libmariadb-dev ships headers in a single non-multiarch path, so on
+# amd64 we install dev + the i386/arm64 runtime libs (for cross-link).
+# On a native arm64 image, just install the dev package — there's no
+# multi-arch cross going on, and the native arm64 dev gives the same
+# headers + the arm64 static lib. Deploy hosts already have libmariadb3
+# installed by any MariaDB/MySQL setup.
 RUN --mount=target=/var/lib/apt/lists,type=cache,sharing=locked \
     --mount=target=/var/cache/apt,type=cache,sharing=locked \
     if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
@@ -89,6 +97,9 @@ RUN --mount=target=/var/lib/apt/lists,type=cache,sharing=locked \
       apt-get install -y --no-install-recommends \
         libmariadb-dev \
         libmariadb3:i386 libmariadb3:arm64; \
+    elif [ "$(dpkg --print-architecture)" = "arm64" ]; then \
+      apt-get -o Acquire::Check-Valid-Until=false update && \
+      apt-get install -y --no-install-recommends libmariadb-dev; \
     fi
 
 CMD ["/bin/bash"]

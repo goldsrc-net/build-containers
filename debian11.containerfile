@@ -21,7 +21,10 @@ RUN --mount=target=/var/lib/apt/lists,type=cache,sharing=locked \
     apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y apt-transport-https lsb-release wget software-properties-common gnupg \
-        curl git gcc-multilib g++-multilib jq lib32z1-dev python python3-pip && \
+        curl git jq python python3-pip && \
+    if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+      apt-get install -y gcc-multilib g++-multilib lib32z1-dev; \
+    fi && \
     wget https://apt.llvm.org/llvm.sh && \
     chmod +x llvm.sh && \
     ./llvm.sh ${CLANG_VERSION} && \
