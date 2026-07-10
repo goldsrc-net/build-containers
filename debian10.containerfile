@@ -145,4 +145,33 @@ RUN --mount=target=/var/lib/apt/lists,type=cache,sharing=locked \
          /opt/mariadb-static-aarch64/lib/libmysqlclient_r.a; \
     fi
 
+# ============================================================================
+# goldsrc-net: final build tooling so build-containers is THE image consumers
+# pull directly (mod-ts CI, the buildchain orchestrator, other repos) — no
+# separately-published derived image.
+#   * cmake 3.29 — AsmJit (Metamod-R/amxmodx) and modern CMakeLists need >=3.24;
+#     buster's apt cmake is 3.13.4. Installed to /usr/local (shadows apt cmake).
+#     Arch-aware: this image is built multi-arch (amd64 + arm64).
+#   * file / binutils / pkg-config / python3-venv — misc native build utils.
+#   * ambuild-python wrapper so Makefile recipes can invoke it by name.
+# QUIC (Rust/quiche + libcurl) is deliberately NOT here: it stays a buildchain
+# `quic` local layer for manual QUIC builds. Published 64-bit images stay QUIC-free.
+# ============================================================================
+RUN CMAKE_VERSION=3.29.6; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) CMAKE_ARCH=x86_64 ;; \
+      arm64) CMAKE_ARCH=aarch64 ;; \
+      *)     CMAKE_ARCH=x86_64 ;; \
+    esac; \
+    curl -sSL "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-${CMAKE_ARCH}.tar.gz" \
+    | tar -xz -C /usr/local --strip-components=1
+
+RUN --mount=target=/var/lib/apt/lists,type=cache,sharing=locked \
+    --mount=target=/var/cache/apt,type=cache,sharing=locked \
+    apt-get -o Acquire::Check-Valid-Until=false update && \
+    apt-get install -y --no-install-recommends file binutils pkg-config python3-venv
+
+RUN printf '#!/bin/sh\nexec /usr/bin/python3 "$@"\n' > /usr/local/bin/ambuild-python \
+ && chmod +x /usr/local/bin/ambuild-python
+
 CMD ["/bin/bash"]
