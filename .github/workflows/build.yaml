@@ -3,12 +3,12 @@ on:
     workflow_dispatch:
     push:
       branches:
-        - 'main'
+        - '64bit'
       tags:
         - '*'
     pull_request:
       branches:
-        - 'main'
+        - '64bit'
 
 jobs:
   build-and-upload:
