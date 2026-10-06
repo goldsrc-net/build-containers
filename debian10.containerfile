@@ -122,10 +122,10 @@ RUN --mount=target=/var/lib/apt/lists,type=cache,sharing=locked \
     MARIADB_CC_SHA256=3e1e494c917cc89f730d507fe954e3e4f5fbfc9a0413e5fcf030146e6d406611; \
     apt-get -o Acquire::Check-Valid-Until=false update; \
     if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
-      apt-get install -y --no-install-recommends libssl-dev libssl-dev:i386 libssl-dev:arm64; \
+      apt-get install -y --no-install-recommends cmake libssl-dev libssl-dev:i386 libssl-dev:arm64; \
       arches="amd64 i386 aarch64"; \
     else \
-      apt-get install -y --no-install-recommends libssl-dev; \
+      apt-get install -y --no-install-recommends cmake libssl-dev; \
       arches="aarch64"; \
     fi; \
     cd /tmp; \
