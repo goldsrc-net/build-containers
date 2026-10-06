@@ -102,48 +102,65 @@ RUN --mount=target=/var/lib/apt/lists,type=cache,sharing=locked \
       apt-get install -y --no-install-recommends libmariadb-dev; \
     fi
 
-# Per-arch staging trees for static-linking MariaDB Connector/C into
-# amxmodx's mysqlx module. libmariadb-dev is NOT Multi-Arch: same in
-# any Debian release (debian BTS #880390, #1006388 — long-standing
-# upstream bug across stretch/buster/bullseye/bookworm), so we can't
-# apt-install dev packages for multiple arches concurrently. Sidestep
-# via `apt download` + `dpkg-deb -x` into per-arch trees.
+# Per-arch static MariaDB Connector/C for amxmodx's mysqlx module, built from source so the module
+# needs nothing on the server: TLS comes from OpenSSL's static libraries, folded into the same
+# archive (Debian's libmariadbclient.a is built against GnuTLS, which the module then fails to
+# find at load time), and the authentication plugins MySQL 8 and MariaDB use are compiled in
+# instead of being loaded from plugin .so files. amxmodx links it with --exclude-libs,ALL so none
+# of it is exported.
 #
-# Each /opt/mariadb-static-<arch>/ has the shape amxmodx's
-# mysqlx/AMBuilder expects with --mysql=<path>:
-#   <path>/include/mysql.h, ma_io.h, server/*.h, etc.
-#   <path>/lib/libmysqlclient_r.a   (renamed from libmariadbclient.a)
-# so the same self-contained static-link pattern upstream uses with
-# Oracle's bundled libmysqlclient_r.a works here with Connector/C 3.x.
+# Each /opt/mariadb-static-<arch>/ has the shape amxmodx's mysqlx/AMBuilder expects with
+# --mysql=<path>:
+#   <path>/include/mysql.h, errmsg.h, mysql/client_plugin.h, ...
+#   <path>/lib/libmysqlclient_r.a   (Connector/C + libssl + libcrypto)
+# Version 3.1.21 matches the Windows build (amxmodx build-64bit.yml MARIADB_CC_VERSION). Built with
+# buster's cmake 3.13 (the newer one is installed further down), hence no `cmake --install`.
 RUN --mount=target=/var/lib/apt/lists,type=cache,sharing=locked \
     --mount=target=/var/cache/apt,type=cache,sharing=locked \
-    apt-get -o Acquire::Check-Valid-Until=false update && \
+    set -e; \
+    MARIADB_CC_VERSION=3.1.21; \
+    MARIADB_CC_SHA256=3e1e494c917cc89f730d507fe954e3e4f5fbfc9a0413e5fcf030146e6d406611; \
+    apt-get -o Acquire::Check-Valid-Until=false update; \
     if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
-      mkdir -p /opt/mariadb-static-amd64/include /opt/mariadb-static-amd64/lib && \
-      cp -r /usr/include/mariadb/. /opt/mariadb-static-amd64/include/ && \
-      cp /usr/lib/x86_64-linux-gnu/libmariadbclient.a \
-         /opt/mariadb-static-amd64/lib/libmysqlclient_r.a && \
-      cd /tmp && mkdir -p mariadb-dl && chmod 0777 mariadb-dl && cd mariadb-dl && \
-      apt-get download libmariadb-dev:i386 libmariadb-dev:arm64 && \
-      for arch in i386 arm64; do \
-        case $arch in \
-          i386)  triplet=i386-linux-gnu;    target=i386 ;; \
-          arm64) triplet=aarch64-linux-gnu; target=aarch64 ;; \
-        esac && \
-        ext=/tmp/mariadb-ext-$arch && \
-        out=/opt/mariadb-static-$target && \
-        mkdir -p "$ext" "$out/include" "$out/lib" && \
-        dpkg-deb -x libmariadb-dev_*_$arch.deb "$ext" && \
-        cp -r "$ext/usr/include/mariadb/." "$out/include/" && \
-        cp "$ext/usr/lib/$triplet/libmariadbclient.a" "$out/lib/libmysqlclient_r.a"; \
-      done && \
-      rm -rf /tmp/mariadb-dl /tmp/mariadb-ext-i386 /tmp/mariadb-ext-arm64; \
-    elif [ "$(dpkg --print-architecture)" = "arm64" ]; then \
-      mkdir -p /opt/mariadb-static-aarch64/include /opt/mariadb-static-aarch64/lib && \
-      cp -r /usr/include/mariadb/. /opt/mariadb-static-aarch64/include/ && \
-      cp /usr/lib/aarch64-linux-gnu/libmariadbclient.a \
-         /opt/mariadb-static-aarch64/lib/libmysqlclient_r.a; \
-    fi
+      apt-get install -y --no-install-recommends libssl-dev libssl-dev:i386 libssl-dev:arm64; \
+      arches="amd64 i386 aarch64"; \
+    else \
+      apt-get install -y --no-install-recommends libssl-dev; \
+      arches="aarch64"; \
+    fi; \
+    cd /tmp; \
+    curl -fsSL -o mcc.tgz "https://github.com/mariadb-corporation/mariadb-connector-c/archive/refs/tags/v${MARIADB_CC_VERSION}.tar.gz"; \
+    echo "${MARIADB_CC_SHA256}  mcc.tgz" | sha256sum -c -; \
+    mkdir mcc-src; tar -xzf mcc.tgz -C mcc-src --strip-components=1; \
+    for arch in $arches; do \
+      cross=""; cc=gcc; ar=ar; \
+      case "$arch" in \
+        amd64)   triplet=x86_64-linux-gnu;  cflags=-m64 ;; \
+        i386)    triplet=i386-linux-gnu;    cflags=-m32 ;; \
+        aarch64) triplet=aarch64-linux-gnu; cflags=""; \
+                 if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+                   cc=aarch64-linux-gnu-gcc; ar=aarch64-linux-gnu-ar; \
+                   cross="-DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64"; \
+                 fi ;; \
+      esac; \
+      out=/opt/mariadb-static-$arch; \
+      cmake -S mcc-src -B mcc-build-$arch -DCMAKE_BUILD_TYPE=Release $cross \
+        -DCMAKE_C_COMPILER=$cc -DCMAKE_C_FLAGS="$cflags -fPIC" -DCMAKE_INSTALL_PREFIX=/tmp/mcc-stage-$arch \
+        -DWITH_SSL=OPENSSL -DOPENSSL_INCLUDE_DIR=/usr/include \
+        -DOPENSSL_SSL_LIBRARY=/usr/lib/$triplet/libssl.a -DOPENSSL_CRYPTO_LIBRARY=/usr/lib/$triplet/libcrypto.a \
+        -DWITH_CURL=OFF -DWITH_UNIT_TESTS=OFF -DWITH_EXTERNAL_ZLIB=OFF \
+        -DCLIENT_PLUGIN_DIALOG=STATIC -DCLIENT_PLUGIN_CLIENT_ED25519=STATIC \
+        -DCLIENT_PLUGIN_CACHING_SHA2_PASSWORD=STATIC -DCLIENT_PLUGIN_SHA256_PASSWORD=STATIC \
+        -DCLIENT_PLUGIN_MYSQL_CLEAR_PASSWORD=STATIC -DCLIENT_PLUGIN_MYSQL_OLD_PASSWORD=STATIC \
+        -DCLIENT_PLUGIN_AUTH_GSSAPI_CLIENT=OFF -DCLIENT_PLUGIN_REMOTE_IO=OFF \
+        -DCLIENT_PLUGIN_AURORA=OFF -DCLIENT_PLUGIN_REPLICATION=OFF; \
+      cmake --build mcc-build-$arch --target install -- -j"$(nproc)"; \
+      mkdir -p $out/include $out/lib; \
+      cp -r /tmp/mcc-stage-$arch/include/mariadb/. $out/include/; \
+      printf 'create %s\naddlib %s\naddlib %s\naddlib %s\nsave\nend\n' "$out/lib/libmysqlclient_r.a" \
+        /tmp/mcc-stage-$arch/lib/mariadb/libmariadbclient.a /usr/lib/$triplet/libssl.a /usr/lib/$triplet/libcrypto.a | $ar -M; \
+    done; \
+    rm -rf /tmp/mcc.tgz /tmp/mcc-src /tmp/mcc-build-* /tmp/mcc-stage-*
 
 # ============================================================================
 # goldsrc-net: final build tooling so build-containers is THE image consumers
