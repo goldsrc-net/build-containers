@@ -1,6 +1,9 @@
 FROM debian:bullseye AS dump_syms_builder
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# goldsrc-net: Debian 11 LTS ended 2026-08-31 and bullseye-security now lives only on
+# archive.debian.org (deb.debian.org answers 404).
+RUN sed -i 's|http://deb.debian.org/debian-security|http://archive.debian.org/debian-security|' /etc/apt/sources.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates build-essential git && \
     rm -rf /var/lib/apt/lists/*
 
@@ -18,6 +21,7 @@ ARG CLANG_VERSION=14
 RUN --mount=target=/var/lib/apt/lists,type=cache,sharing=locked \
     --mount=target=/var/cache/apt,type=cache,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean && \
+    sed -i 's|http://deb.debian.org/debian-security|http://archive.debian.org/debian-security|' /etc/apt/sources.list && \
     apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y apt-transport-https lsb-release wget software-properties-common gnupg \
